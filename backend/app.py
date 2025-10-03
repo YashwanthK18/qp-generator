@@ -2,34 +2,32 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import os
 from werkzeug.utils import secure_filename
-from question_generator import generate_question_paper
+from question_generator import QuestionPaperGenerator
 
 app = Flask(__name__)
 CORS(app)
 
+# Configuration
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'output'
 ALLOWED_EXTENSIONS = {'docx', 'doc'}
 
+# Create necessary folders
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route('/generate', methods=['POST'])
-def generate():
+def generate_question_paper():
     try:
-        # Clear previous uploads
-        for file in os.listdir(UPLOAD_FOLDER):
-            os.remove(os.path.join(UPLOAD_FOLDER, file))
-        
+        # Check if files are present
         if 'files' not in request.files:
-            return jsonify({'error': 'No files provided'}), 400
+            return jsonify({'error': 'No files uploaded'}), 400
         
         files = request.files.getlist('files')
         
@@ -39,45 +37,59 @@ def generate():
         if len(files) > 5:
             return jsonify({'error': 'Maximum 5 files allowed'}), 400
         
-        file_paths = []
+        # Clear previous uploads
+        for filename in os.listdir(UPLOAD_FOLDER):
+            file_path = os.path.join(UPLOAD_FOLDER, filename)
+            if os.path.isfile(file_path):
+                os.unlink(file_path)
+        
+        # Save uploaded files
+        saved_files = []
         for file in files:
             if file and allowed_file(file.filename):
                 filename = secure_filename(file.filename)
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(filepath)
-                file_paths.append(filepath)
+                saved_files.append(filepath)
             else:
                 return jsonify({'error': f'Invalid file type: {file.filename}'}), 400
         
         # Generate question paper
-        output_path = os.path.join(app.config['OUTPUT_FOLDER'], 'new_question_paper.docx')
-        stats = generate_question_paper(file_paths, output_path)
+        generator = QuestionPaperGenerator(saved_files)
+        result = generator.generate_paper()
         
-        return jsonify({
-            'message': 'Question paper generated successfully',
-            'modulesFound': stats['modules'],
-            'questionsExtracted': stats['questions'],
-            'filename': 'new_question_paper.docx'
-        })
-    
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'modulesFound': result['modules_found'],
+                'questionsExtracted': result['questions_extracted'],
+                'message': 'Question paper generated successfully'
+            }), 200
+        else:
+            return jsonify({'error': result['error']}), 500
+            
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/download', methods=['GET'])
-def download():
+def download_paper():
     try:
-        output_path = os.path.join(app.config['OUTPUT_FOLDER'], 'new_question_paper.docx')
-        if not os.path.exists(output_path):
-            return jsonify({'error': 'No generated file found'}), 404
-        
-        return send_file(output_path, as_attachment=True, download_name='new_question_paper.docx')
-    
+        output_file = os.path.join(OUTPUT_FOLDER, 'new_question_paper.docx')
+        if os.path.exists(output_file):
+            return send_file(
+                output_file,
+                as_attachment=True,
+                download_name='new_question_paper.docx',
+                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            )
+        else:
+            return jsonify({'error': 'File not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
-def health():
-    return jsonify({'status': 'healthy'})
+def health_check():
+    return jsonify({'status': 'healthy'}), 200
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
